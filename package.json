@@ -1,0 +1,19 @@
+{
+  "name": "nodeora",
+  "description": "Async query execution for Oracle",
+  "keywords": ["database","db","oracle"],
+  "homepage": "https://github.com/wizardofeast/nodeora",
+  "version" : "0.0.1",
+  "engines" : {
+	"node": ">=0.6.0"
+  },
+  "maintainers": [ {"name":"Tümay Tuzcu","email":"wizard@wizardsofeast.com"}],
+  "bugs": {"url":"https://github.com/wizardofeast/nodeora/issues"},
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/wizardofeast/nodeora.git"
+  },
+  "dependencies": {
+  },
+  "main": "./lib/nodeora.js"
+}
