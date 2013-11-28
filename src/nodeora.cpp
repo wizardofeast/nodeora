@@ -409,7 +409,10 @@ namespace nodeora
 		string query;
 		uv_work_t request;
 		Table* result;
+		bool failed;
+		string failMessage;
 	};
+	 
 
 	class Connection:node::ObjectWrap {
 	private:
@@ -418,7 +421,7 @@ namespace nodeora
 		oracle::occi::Connection *conn;
 
 	public:
-
+		
 
 		static void Connection::Initialize(Handle<Object> target)
 		{
@@ -433,23 +436,18 @@ namespace nodeora
 			NODE_SET_PROTOTYPE_METHOD(constructor_template, "query", Connection::Query);
 			NODE_SET_PROTOTYPE_METHOD(constructor_template, "close", Connection::Close);
 
-			target->Set(String::NewSymbol("Connection"), constructor_template->GetFunction());
+			target->Set(String::NewSymbol("Connection"), constructor_template->GetFunction());				
 		}
 
-		Connection(){
+		Connection(){	
 			env = oracle::occi::Environment::createEnvironment (oracle::occi::Environment::DEFAULT);
 		}
 
-		~Connection(){
-			if(conn)
-			{
-				env->terminateConnection(conn);
-				conn = NULL;
-			}
-
-			env=NULL;
+		~Connection()
+		{
+			env = NULL;
 		}
-
+		
 		static Handle<Value> Open(const Arguments& args){
 			HandleScope scope;
 			Connection* connection = ObjectWrap::Unwrap<Connection>(args.This());
@@ -479,43 +477,70 @@ namespace nodeora
 			baton->query = *String::Utf8Value(ora_sql);
 			baton->connection = connection->conn;
 			baton->request.data = baton;
-			int r = uv_queue_work(uv_default_loop(), &baton->request, Read, Result);		
+			int result = uv_queue_work(uv_default_loop(), &baton->request, Read, Result);	
+			if (result != 0)
+			{
+				uv_err_t error = uv_last_error(uv_default_loop());
+				ThrowException(String::New(uv_strerror(error)));
+			}
+
 			return Undefined();
 		}
 
 		static void Read(uv_work_t* work)
 		{
-			QueryBaton* baton = static_cast<QueryBaton*>(work->data);				
-			oracle::occi::Statement* stmt = baton->connection->createStatement(baton->query);
-			oracle::occi::ResultSet* rs = stmt->executeQuery(baton->query);			
-			std::vector<oracle::occi::MetaData> metadata =rs->getColumnListMetaData();
-			baton->result = new Table(metadata);			
+			QueryBaton* baton = static_cast<QueryBaton*>(work->data);		
+			baton->failed = false;	
 
-			while(rs->next()) {		
-				baton->result->ReadRow(rs);
-			}
-
-			if(stmt && rs) {
-				stmt->closeResultSet(rs);
-				rs = NULL;
-			}
-
-			if(stmt)
+			try
 			{
-				baton->connection->terminateStatement(stmt);
-				stmt = NULL;
+				oracle::occi::Statement* stmt = baton->connection->createStatement(baton->query);
+				oracle::occi::ResultSet* rs = stmt->executeQuery(baton->query);			
+				std::vector<oracle::occi::MetaData> metadata =rs->getColumnListMetaData();
+				baton->result = new Table(metadata);			
+
+				while(rs->next()) {		
+					baton->result->ReadRow(rs);
+				}
+
+				if(stmt && rs) {
+					stmt->closeResultSet(rs);
+					rs = NULL;
+				}
+
+				if(stmt)
+				{
+					baton->connection->terminateStatement(stmt);
+					stmt = NULL;
+				}
+			}
+			catch(oracle::occi::SQLException ex)
+			{
+				baton->failed = true;
+				baton->failMessage = ex.getMessage();
 			}
 		}
 
 		static void Result(uv_work_t* work,int status)
 		{
 			HandleScope scope;				
-			Handle<Value> argv[1];	
-			QueryBaton* baton = static_cast<QueryBaton*>(work->data);	
-			argv[0] = baton->result->ToValue();
-			baton->callback->Call(Context::GetCurrent()->Global(),1, argv);	
-			baton->callback.Dispose();
-			delete baton->result;
+			Handle<Value> argv[2];	
+			QueryBaton* baton = static_cast<QueryBaton*>(work->data);
+			if(!baton->failed)
+			{
+				argv[0] = Undefined();
+				argv[1] = baton->result->ToValue();	
+				delete baton->result;
+			}
+			else 
+			{
+				argv[0] = Exception::Error(String::New(baton->failMessage.c_str()));
+				argv[1] = Undefined();
+			}
+
+			baton->callback->Call(Context::GetCurrent()->Global(),2, argv);	
+			baton->callback.Dispose();		
+
 			delete baton;
 		}
 
@@ -524,8 +549,9 @@ namespace nodeora
 			Connection* connection = ObjectWrap::Unwrap<Connection>(args.This());
 			try 
 			{
-				connection->env->terminateConnection(connection->conn);
-				connection->env = NULL;
+				if(connection->conn)
+					connection->env->terminateConnection(connection->conn);	
+				connection->conn = NULL;
 			}
 			catch(oracle::occi::SQLException ex)
 			{
